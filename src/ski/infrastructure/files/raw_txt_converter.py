@@ -1,8 +1,9 @@
-import argparse
+from __future__ import annotations
+
 import csv
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any
 
 EXPECTED_COLUMNS = [
     "time",
@@ -16,7 +17,7 @@ EXPECTED_COLUMNS = [
 ]
 
 
-def _try_numeric(value: str):
+def _try_numeric(value: str) -> Any:
     value = value.strip()
     try:
         if re.fullmatch(r"[+-]?\d+", value):
@@ -26,9 +27,8 @@ def _try_numeric(value: str):
         return value
 
 
-def parse_metadata(lines: List[str]) -> Dict[str, object]:
-    metadata: Dict[str, object] = {}
-
+def parse_metadata(lines: list[str]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
     for line in lines:
         line = line.strip()
         if not line or line.lower() == "metadata section":
@@ -43,21 +43,19 @@ def parse_metadata(lines: List[str]) -> Dict[str, object]:
         raw_value = raw_value.strip()
 
         if key == "gyro_offset_xyz":
-            parts = [p for p in re.split(r"[\s,]+", raw_value) if p]
+            parts = [part for part in re.split(r"[\s,]+", raw_value) if part]
             metadata["gyro_offset_x"] = float(parts[0]) if len(parts) > 0 else None
             metadata["gyro_offset_y"] = float(parts[1]) if len(parts) > 1 else None
             metadata["gyro_offset_z"] = float(parts[2]) if len(parts) > 2 else None
             metadata[key] = raw_value
         else:
             metadata[key] = _try_numeric(raw_value)
-
     return metadata
 
 
-def parse_data(lines: List[str]) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
-    rows: List[Dict[str, object]] = []
-    bad_rows: List[Dict[str, object]] = []
-
+def parse_data(lines: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    bad_rows: list[dict[str, Any]] = []
     in_data = False
     header_seen = False
     base_time = None
@@ -77,7 +75,7 @@ def parse_data(lines: List[str]) -> Tuple[List[Dict[str, object]], List[Dict[str
             header = line.split()
             if header != EXPECTED_COLUMNS:
                 raise ValueError(
-                    f"Unexpected data header: {header}. Expected: {EXPECTED_COLUMNS}"
+                    f"Неверный заголовок секции данных: {header}. Ожидалось: {EXPECTED_COLUMNS}"
                 )
             header_seen = True
             continue
@@ -97,7 +95,7 @@ def parse_data(lines: List[str]) -> Tuple[List[Dict[str, object]], List[Dict[str
             continue
 
         try:
-            parsed = {col: float(value) for col, value in zip(EXPECTED_COLUMNS, parts)}
+            parsed = {column: float(value) for column, value in zip(EXPECTED_COLUMNS, parts)}
             parsed["time"] = int(float(parsed["time"]))
         except ValueError as exc:
             bad_rows.append(
@@ -115,21 +113,20 @@ def parse_data(lines: List[str]) -> Tuple[List[Dict[str, object]], List[Dict[str
         parsed["time_rel_s"] = (parsed["time"] - base_time) / 1000.0
         parsed["dt_ms"] = None if prev_time is None else parsed["time"] - prev_time
         prev_time = parsed["time"]
-
         rows.append(parsed)
 
     return rows, bad_rows
 
 
-def write_csv(path: Path, rows: List[Dict[str, object]], fieldnames: List[str]) -> None:
+def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def convert_file(input_file: Path, output_prefix: Path | None = None) -> Tuple[Path, Path, Path]:
+def convert_file(input_file: Path, output_prefix: Path | None = None) -> tuple[Path, Path, Path, dict[str, Any], list[dict[str, Any]]]:
     text = input_file.read_text(encoding="utf-8")
     lines = text.splitlines()
 
@@ -143,8 +140,8 @@ def convert_file(input_file: Path, output_prefix: Path | None = None) -> Tuple[P
     data_path = output_prefix.parent / f"{output_prefix.name}_data.csv"
     bad_rows_path = output_prefix.parent / f"{output_prefix.name}_bad_rows.csv"
 
-    meta_rows = [{"key": key, "value": value} for key, value in metadata.items()]
-    write_csv(metadata_path, meta_rows, ["key", "value"])
+    metadata_rows = [{"key": key, "value": value} for key, value in metadata.items()]
+    write_csv(metadata_path, metadata_rows, ["key", "value"])
 
     data_fieldnames = [
         "time",
@@ -164,31 +161,4 @@ def convert_file(input_file: Path, output_prefix: Path | None = None) -> Tuple[P
     bad_fieldnames = ["line_number", "raw_line", "reason"]
     write_csv(bad_rows_path, bad_rows, bad_fieldnames)
 
-    return metadata_path, data_path, bad_rows_path
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Convert a custom sensor TXT dump into CSV files."
-    )
-    parser.add_argument("input_file", type=Path, help="Path to the source TXT file")
-    parser.add_argument(
-        "--output-prefix",
-        type=Path,
-        default=None,
-        help="Optional output prefix without extension",
-    )
-    args = parser.parse_args()
-
-    metadata_path, data_path, bad_rows_path = convert_file(
-        args.input_file,
-        args.output_prefix,
-    )
-
-    print(f"Metadata CSV: {metadata_path}")
-    print(f"Data CSV: {data_path}")
-    print(f"Bad rows CSV: {bad_rows_path}")
-
-
-if __name__ == "__main__":
-    main()
+    return metadata_path, data_path, bad_rows_path, metadata, data_rows
