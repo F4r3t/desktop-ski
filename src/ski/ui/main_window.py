@@ -144,23 +144,26 @@ class MainWindow(QMainWindow):
         download_result = self.device_service.download_data(self.app_data_dir)
         self.dataset = self.data_service.load_dataset_from_download(download_result)
 
-        self._refresh_data_actions()
-        self._show_chart_placeholder(
-            "Данные загружены из выгрузки.\n"
-            f"Файл: {self.dataset.source_path.name}\n"
-            f"Строк: {self.dataset.row_count}\n"
-            "Нажмите «Показать график», чтобы построить графики Matplotlib."
-        )
-
-        downloaded_count = len(download_result.downloaded_files)
-        selected_name = (
+        converted_count = len(self.dataset.conversions)
+        latest_raw_name = (
             download_result.selected_raw_file.name
             if download_result.selected_raw_file
             else "TXT-файл не выбран"
         )
+
+        self._refresh_data_actions()
+        self._show_chart_placeholder(
+            "Данные выгружены и обработаны.\n"
+            f"Последний файл: {latest_raw_name}\n"
+            f"Загружен обработанный CSV: {self.dataset.source_path.name}\n"
+            f"Сконвертировано TXT -> CSV: {converted_count}\n"
+            f"Строк после обработки: {self.dataset.row_count}\n"
+            "Нажмите «Показать график», чтобы построить графики Matplotlib."
+        )
+
         self._set_status(
-            f"Выгрузка завершена успешно. Скачано файлов: {downloaded_count}. "
-            f"Загружен датасет: {selected_name}.",
+            f"Выгрузка завершена. TXT -> CSV: {converted_count} файлов. "
+            f"Для показа загружен последний файл: {latest_raw_name}.",
             kind="success",
         )
 
@@ -175,18 +178,38 @@ class MainWindow(QMainWindow):
             self._set_status("Импорт данных отменён пользователем.", kind="error")
             return
 
-        self.dataset = self.data_service.import_csv(Path(file_name))
+        imported_path = Path(file_name)
+        self.dataset = self.data_service.import_csv(imported_path)
         self._refresh_data_actions()
-        self._show_chart_placeholder(
-            "CSV успешно импортирован.\n"
-            f"Файл: {self.dataset.source_path.name}\n"
-            f"Строк: {self.dataset.row_count}\n"
-            "Нажмите «Показать график», чтобы построить графики Matplotlib."
+
+        processed_in_app = (
+                self.dataset.processing_artifacts is not None
+                and self.dataset.source_path != imported_path
         )
-        self._set_status(
-            f"Импорт выполнен успешно: {self.dataset.source_path.name}.",
-            kind="success",
-        )
+
+        if processed_in_app:
+            placeholder_text = (
+                "CSV успешно импортирован и обработан.\n"
+                f"Исходный CSV: {imported_path.name}\n"
+                f"Загружен обработанный CSV: {self.dataset.source_path.name}\n"
+                f"Строк после обработки: {self.dataset.row_count}\n"
+                "Нажмите «Показать график», чтобы построить графики Matplotlib."
+            )
+            status_text = (
+                f"Импорт выполнен: {imported_path.name}. "
+                f"CSV был обработан и сохранён как {self.dataset.source_path.name}."
+            )
+        else:
+            placeholder_text = (
+                "CSV успешно импортирован.\n"
+                f"Файл: {self.dataset.source_path.name}\n"
+                f"Строк: {self.dataset.row_count}\n"
+                "Нажмите «Показать график», чтобы построить графики Matplotlib."
+            )
+            status_text = f"Импорт выполнен успешно: {self.dataset.source_path.name}."
+
+        self._show_chart_placeholder(placeholder_text)
+        self._set_status(status_text, kind="success")
 
     def _export_data(self) -> None:
         dataset = self._require_dataset()

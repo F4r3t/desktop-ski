@@ -10,15 +10,90 @@ from core.plot_models import PlotComputationResult
 
 
 class PlotProcessingService:
-    REQUIRED_COLUMNS = (
+    RAW_REQUIRED_COLUMNS = (
         "time_rel_s",
         "dt_ms",
         "accel_x",
         "accel_z",
     )
 
+    PROCESSED_REQUIRED_COLUMNS = (
+        "time_rel_s",
+        "x_coord",
+        "z_coord",
+    )
+
     def prepare_plot_data(self, dataset: LoadedDataset) -> PlotComputationResult:
-        self._validate_columns(dataset.columns)
+        columns = set(dataset.columns)
+
+        if self._has_processed_columns(columns):
+            return self._prepare_from_processed(dataset)
+
+        return self._prepare_from_raw(dataset)
+
+    def _has_processed_columns(self, columns: set[str]) -> bool:
+        return all(column in columns for column in self.PROCESSED_REQUIRED_COLUMNS)
+
+    def _prepare_from_processed(self, dataset: LoadedDataset) -> PlotComputationResult:
+        time_s = self._column_to_float_array(dataset.rows, "time_rel_s")
+        if time_s.size < 2:
+            raise DataOperationError("Недостаточно точек для построения графиков.")
+
+        time_s = self._sanitize_time(time_s)
+        dt_s = self._build_dt_seconds(dataset.rows, time_s)
+
+        accel_x = self._first_existing_column(
+            dataset,
+            ("earth_acc_north", "accel_x_cal", "accel_x"),
+        )
+        accel_z = self._first_existing_column(
+            dataset,
+            ("earth_acc_up", "accel_z_cal", "accel_z"),
+        )
+
+        velocity_x = self._first_existing_column(dataset, ("vx",), fallback=None)
+        velocity_y = self._first_existing_column(dataset, ("vy",), fallback=None)
+        velocity_z = self._first_existing_column(dataset, ("vz",), fallback=None)
+        speed = self._first_existing_column(dataset, ("velocity",), fallback=None)
+        coord_x = self._first_existing_column(dataset, ("x_coord",), fallback=None)
+        coord_z = self._first_existing_column(dataset, ("z_coord",), fallback=None)
+
+        if velocity_x is None:
+            velocity_x = self._integrate_trapezoid(accel_x, dt_s)
+
+        if velocity_z is None:
+            velocity_z = self._integrate_trapezoid(accel_z, dt_s)
+
+        if velocity_y is None:
+            velocity_y = np.zeros_like(velocity_x, dtype=np.float64)
+
+        if speed is None:
+            speed = np.sqrt(velocity_x ** 2 + velocity_z ** 2)
+
+        if coord_x is None:
+            coord_x = self._integrate_trapezoid(velocity_x, dt_s)
+
+        if coord_z is None:
+            coord_z = self._integrate_trapezoid(velocity_z, dt_s)
+
+        trajectory_color_speed = np.sqrt(velocity_x ** 2 + velocity_y ** 2)
+
+        return PlotComputationResult(
+            time_s=time_s,
+            accel_x_ms2=accel_x,
+            accel_z_ms2=accel_z,
+            velocity_x_ms=velocity_x,
+            velocity_z_ms=velocity_z,
+            speed_ms=speed,
+            coord_x_m=coord_x,
+            coord_z_m=coord_z,
+            dt_s=dt_s,
+            baseline_window=0,
+            trajectory_color_speed_ms=trajectory_color_speed,
+        )
+
+    def _prepare_from_raw(self, dataset: LoadedDataset) -> PlotComputationResult:
+        self._validate_columns(dataset.columns, self.RAW_REQUIRED_COLUMNS)
 
         time_s = self._column_to_float_array(dataset.rows, "time_rel_s")
         if time_s.size < 2:
@@ -44,6 +119,10 @@ class PlotProcessingService:
         coord_x = self._integrate_trapezoid(velocity_x, dt_s)
         coord_z = self._integrate_trapezoid(velocity_z, dt_s)
 
+        # Для raw-режима vy отсутствует, поэтому безопасный fallback:
+        # используем текущий 2D-модуль по доступным осям.
+        trajectory_color_speed = np.sqrt(velocity_x ** 2 + velocity_z ** 2)
+
         return PlotComputationResult(
             time_s=time_s,
             accel_x_ms2=accel_x,
@@ -55,14 +134,26 @@ class PlotProcessingService:
             coord_z_m=coord_z,
             dt_s=dt_s,
             baseline_window=baseline_window,
+            trajectory_color_speed_ms=trajectory_color_speed,
         )
 
-    def _validate_columns(self, columns: Iterable[str]) -> None:
-        missing = [column for column in self.REQUIRED_COLUMNS if column not in columns]
+    def _validate_columns(self, columns: Iterable[str], required: Iterable[str]) -> None:
+        missing = [column for column in required if column not in columns]
         if missing:
             raise DataOperationError(
                 "Для построения графиков не хватает столбцов: " + ", ".join(missing)
             )
+
+    def _first_existing_column(
+            self,
+            dataset: LoadedDataset,
+            candidates: tuple[str, ...],
+            fallback: np.ndarray | None = None,
+    ) -> np.ndarray | None:
+        for column in candidates:
+            if column in dataset.columns:
+                return self._column_to_float_array(dataset.rows, column)
+        return fallback
 
     @staticmethod
     def _column_to_float_array(rows: list[dict[str, object]], column: str) -> np.ndarray:
@@ -93,6 +184,7 @@ class PlotProcessingService:
     ) -> np.ndarray:
         dt_ms: list[float] = []
         has_real_dt = False
+
         for row in rows:
             raw_value = row.get("dt_ms")
             try:

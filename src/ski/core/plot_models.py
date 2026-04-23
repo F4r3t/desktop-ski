@@ -21,3 +21,4 @@ class PlotComputationResult:
     coord_z_m: FloatArray
     dt_s: FloatArray
     baseline_window: int
+    trajectory_color_speed_ms: FloatArray
