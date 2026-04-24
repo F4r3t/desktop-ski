@@ -51,6 +51,7 @@ class MotionProcessingService:
         "accel_z",
         "pressure",
     )
+    RAW_REQUIRED_COLUMNS_LIST = list(RAW_REQUIRED_COLUMNS)
 
     def __init__(
             self,
@@ -189,7 +190,7 @@ class MotionProcessingService:
         for column in self.RAW_REQUIRED_COLUMNS:
             df[column] = pd.to_numeric(df[column], errors="coerce")
 
-        if df[self.RAW_REQUIRED_COLUMNS].isnull().any().any():
+        if df[self.RAW_REQUIRED_COLUMNS_LIST].isnull().any().any():
             raise DataOperationError(
                 "CSV содержит пустые или нечисловые значения в обязательных IMU-столбцах."
             )

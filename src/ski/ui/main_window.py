@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
 
         self.project_dir = Path(__file__).resolve().parent.parent
-        self.app_data_dir = self.project_dir / "data" / "downloads"
+        self.app_data_dir = self.project_dir / "data"
         self.app_data_dir.mkdir(parents=True, exist_ok=True)
 
         self.device_service = DeviceService()
@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         self._refresh_data_actions()
         self._show_chart_placeholder(
             "Данные ещё не загружены.\n"
-            "Подключите ESP32 и выполните выгрузку либо импортируйте CSV."
+            "Подключите ESP32 и выполните выгрузку либо импортируйте CSV/TXT."
         )
         self._set_status("Программа готова к работе.", kind="neutral")
 
@@ -170,43 +170,74 @@ class MainWindow(QMainWindow):
     def _import_data(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
             self,
-            "Импорт CSV",
+            "Импорт данных",
             str(self.project_dir / "data"),
-            "CSV files (*.csv)",
+            (
+                "Файлы данных (*.csv *.txt);;"
+                "CSV files (*.csv);;"
+                "TXT files (*.txt);;"
+                "All files (*.*)"
+            ),
         )
+
         if not file_name:
             self._set_status("Импорт данных отменён пользователем.", kind="error")
             return
 
         imported_path = Path(file_name)
-        self.dataset = self.data_service.import_csv(imported_path)
-        self._refresh_data_actions()
 
-        processed_in_app = (
-                self.dataset.processing_artifacts is not None
-                and self.dataset.source_path != imported_path
+        txt_output_dir = self.project_dir / "data" / "imports" / imported_path.stem
+
+        self.dataset = self.data_service.import_file(
+            imported_path,
+            txt_output_dir=txt_output_dir,
         )
 
-        if processed_in_app:
+        self._refresh_data_actions()
+
+        if self.dataset.source_type == "import_txt":
             placeholder_text = (
-                "CSV успешно импортирован и обработан.\n"
-                f"Исходный CSV: {imported_path.name}\n"
-                f"Загружен обработанный CSV: {self.dataset.source_path.name}\n"
-                f"Строк после обработки: {self.dataset.row_count}\n"
+                "TXT успешно импортирован и сконвертирован в CSV.\n"
+                f"Исходный TXT: {imported_path.name}\n"
+                f"CSV с данными: {self.dataset.source_path.name}\n"
+                f"Строк после конвертации: {self.dataset.row_count}\n"
                 "Нажмите «Показать график», чтобы построить графики Matplotlib."
             )
+
             status_text = (
-                f"Импорт выполнен: {imported_path.name}. "
-                f"CSV был обработан и сохранён как {self.dataset.source_path.name}."
+                f"Импорт TXT выполнен: {imported_path.name}. "
+                f"Файл сконвертирован в {self.dataset.source_path.name}."
             )
+
         else:
-            placeholder_text = (
-                "CSV успешно импортирован.\n"
-                f"Файл: {self.dataset.source_path.name}\n"
-                f"Строк: {self.dataset.row_count}\n"
-                "Нажмите «Показать график», чтобы построить графики Matplotlib."
+            processed_in_app = (
+                    self.dataset.processing_artifacts is not None
+                    and self.dataset.source_path != imported_path
             )
-            status_text = f"Импорт выполнен успешно: {self.dataset.source_path.name}."
+
+            if processed_in_app:
+                placeholder_text = (
+                    "CSV успешно импортирован и обработан.\n"
+                    f"Исходный CSV: {imported_path.name}\n"
+                    f"Загружен обработанный CSV: {self.dataset.source_path.name}\n"
+                    f"Строк после обработки: {self.dataset.row_count}\n"
+                    "Нажмите «Показать график», чтобы построить графики Matplotlib."
+                )
+
+                status_text = (
+                    f"Импорт выполнен: {imported_path.name}. "
+                    f"CSV был обработан и сохранён как {self.dataset.source_path.name}."
+                )
+
+            else:
+                placeholder_text = (
+                    "CSV успешно импортирован.\n"
+                    f"Файл: {self.dataset.source_path.name}\n"
+                    f"Строк: {self.dataset.row_count}\n"
+                    "Нажмите «Показать график», чтобы построить графики Matplotlib."
+                )
+
+                status_text = f"Импорт выполнен успешно: {self.dataset.source_path.name}."
 
         self._show_chart_placeholder(placeholder_text)
         self._set_status(status_text, kind="success")
@@ -264,7 +295,7 @@ class MainWindow(QMainWindow):
     def _require_dataset(self) -> LoadedDataset:
         if self.dataset is None or not self.dataset.has_data:
             raise AppError(
-                "Нет загруженных данных. Сначала выполните выгрузку с ESP32 или импорт CSV."
+                "Нет загруженных данных. Сначала выполните выгрузку с ESP32 или импорт CSV/TXT."
             )
         return self.dataset
 

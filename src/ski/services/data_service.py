@@ -4,32 +4,66 @@ import csv
 from pathlib import Path
 from typing import Any
 
-
 from core.exceptions import DataOperationError
-from core.models import DownloadResult, LoadedDataset
+from core.models import DownloadResult, LoadedDataset, TxtConversionArtifacts
 from infrastructure.files.raw_txt_converter import convert_file
+from services.motion_processing_service import MotionProcessingService
 
 
 class DataService:
     SUPPORTED_ENCODINGS = ("utf-8-sig", "utf-8", "cp1251", "latin-1")
     CANDIDATE_DELIMITERS = (",", ";", "\t")
+    PROCESSED_MARKER_COLUMNS = ("x_coord", "z_coord", "velocity", "vx", "vz")
+
+    def __init__(
+            self,
+            motion_processing_service: MotionProcessingService | None = None,
+    ) -> None:
+        self.motion_processing_service = motion_processing_service or MotionProcessingService()
 
     def load_dataset_from_download(self, download_result: DownloadResult) -> LoadedDataset:
         raw_txt_path = download_result.selected_raw_file
+
         if raw_txt_path is None:
             raise DataOperationError(
                 "После выгрузки не найден TXT-файл с сырыми данными для конвертации."
             )
 
         output_prefix = raw_txt_path.with_suffix("")
-        metadata_csv_path, data_csv_path, bad_rows_csv_path, metadata, _ = convert_file(
-            raw_txt_path,
-            output_prefix=output_prefix,
-        )
+
+        try:
+            (
+                metadata_csv_path,
+                data_csv_path,
+                bad_rows_csv_path,
+                metadata,
+                _,
+            ) = convert_file(
+                raw_txt_path,
+                output_prefix=output_prefix,
+            )
+
+        except Exception as exc:
+            raise DataOperationError(
+                f"Не удалось сконвертировать TXT-файл после выгрузки: {exc}"
+            ) from exc
 
         rows, columns = self._read_csv_rows_and_columns(data_csv_path)
 
-        return LoadedDataset(
+        if not rows:
+            raise DataOperationError(
+                "TXT-файл был сконвертирован, но итоговый CSV не содержит строк данных."
+            )
+
+        conversion = TxtConversionArtifacts(
+            source_txt_path=raw_txt_path,
+            metadata_csv_path=metadata_csv_path,
+            data_csv_path=data_csv_path,
+            bad_rows_csv_path=bad_rows_csv_path,
+            metadata=metadata,
+        )
+
+        dataset = LoadedDataset(
             source_type="download",
             source_path=data_csv_path,
             rows=rows,
@@ -39,19 +73,122 @@ class DataService:
             data_csv_path=data_csv_path,
             bad_rows_csv_path=bad_rows_csv_path,
             raw_txt_path=raw_txt_path,
+            conversions=[conversion],
         )
+
+        processing_dir = raw_txt_path.parent / f"{raw_txt_path.stem}_motion"
+        return self._process_motion_if_needed(dataset, output_dir=processing_dir)
+
+    def import_file(
+            self,
+            file_path: Path,
+            txt_output_dir: Path | None = None,
+    ) -> LoadedDataset:
+        file_path = Path(file_path)
+
+        if not file_path.exists():
+            raise DataOperationError(f"Файл не найден: {file_path}")
+
+        suffix = file_path.suffix.lower()
+
+        if suffix == ".csv":
+            return self.import_csv(file_path)
+
+        if suffix == ".txt":
+            return self.import_txt(file_path, output_dir=txt_output_dir)
+
+        raise DataOperationError(
+            f"Неподдерживаемый формат файла: {suffix}. "
+            "Можно импортировать только CSV или TXT."
+        )
+
+    def import_txt(
+            self,
+            txt_path: Path,
+            output_dir: Path | None = None,
+    ) -> LoadedDataset:
+
+        txt_path = Path(txt_path)
+
+        if not txt_path.exists():
+            raise DataOperationError(f"TXT-файл не найден: {txt_path}")
+
+        if txt_path.suffix.lower() != ".txt":
+            raise DataOperationError(
+                f"Ожидался TXT-файл, но получен файл: {txt_path.name}"
+            )
+
+        try:
+            if output_dir is None:
+                output_prefix = txt_path.with_suffix("")
+            else:
+                output_dir = Path(output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_prefix = output_dir / txt_path.stem
+
+            (
+                metadata_csv_path,
+                data_csv_path,
+                bad_rows_csv_path,
+                metadata,
+                _,
+            ) = convert_file(
+                txt_path,
+                output_prefix=output_prefix,
+            )
+
+        except Exception as exc:
+            raise DataOperationError(
+                f"Не удалось конвертировать TXT-файл {txt_path.name}: {exc}"
+            ) from exc
+
+        rows, columns = self._read_csv_rows_and_columns(data_csv_path)
+
+        if not rows:
+            raise DataOperationError(
+                f"TXT-файл {txt_path.name} был сконвертирован, "
+                "но итоговый CSV не содержит строк данных."
+            )
+
+        conversion = TxtConversionArtifacts(
+            source_txt_path=txt_path,
+            metadata_csv_path=metadata_csv_path,
+            data_csv_path=data_csv_path,
+            bad_rows_csv_path=bad_rows_csv_path,
+            metadata=metadata,
+        )
+
+        dataset = LoadedDataset(
+            source_type="import_txt",
+            source_path=data_csv_path,
+            rows=rows,
+            columns=columns,
+            metadata=metadata,
+            metadata_csv_path=metadata_csv_path,
+            data_csv_path=data_csv_path,
+            bad_rows_csv_path=bad_rows_csv_path,
+            raw_txt_path=txt_path,
+            conversions=[conversion],
+        )
+
+        base_dir = output_dir if output_dir is not None else txt_path.parent / f"{txt_path.stem}_motion"
+        return self._process_motion_if_needed(dataset, output_dir=Path(base_dir))
 
     def import_csv(self, csv_path: Path) -> LoadedDataset:
         rows, columns = self._read_csv_rows_and_columns(csv_path)
         if not rows:
             raise DataOperationError("CSV-файл пустой или не содержит строк данных.")
 
-        return LoadedDataset(
+        dataset = LoadedDataset(
             source_type="import",
             source_path=csv_path,
             rows=rows,
             columns=columns,
+            source_raw_csv_path=csv_path,
         )
+
+        processing_dir = csv_path.parent / f"{csv_path.stem}_motion"
+        return self._process_motion_if_needed(dataset, output_dir=processing_dir)
 
     def export_csv(self, dataset: LoadedDataset, target_path: Path) -> None:
         if not dataset.rows:
@@ -71,6 +208,56 @@ class DataService:
             )
             writer.writeheader()
             writer.writerows(normalized_rows)
+
+    def _process_motion_if_needed(
+            self,
+            dataset: LoadedDataset,
+            output_dir: Path,
+    ) -> LoadedDataset:
+        if not self._looks_like_raw_motion_csv(dataset.columns):
+            return dataset
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        artifacts = self.motion_processing_service.process_raw_csv_file(
+            csv_path=dataset.source_path,
+            output_dir=output_dir,
+            metadata=dataset.metadata,
+        )
+
+        processed_rows, processed_columns = self._read_csv_rows_and_columns(
+            artifacts.processed_motion_csv_path
+        )
+
+        if not processed_rows:
+            raise DataOperationError(
+                "IMU-обработка завершилась, но итоговый processed_motion.csv оказался пустым."
+            )
+
+        return LoadedDataset(
+            source_type=dataset.source_type,
+            source_path=artifacts.processed_motion_csv_path,
+            rows=processed_rows,
+            columns=processed_columns,
+            metadata=dataset.metadata,
+            metadata_csv_path=dataset.metadata_csv_path,
+            data_csv_path=dataset.data_csv_path,
+            bad_rows_csv_path=dataset.bad_rows_csv_path,
+            raw_txt_path=dataset.raw_txt_path,
+            source_raw_csv_path=dataset.source_path,
+            processing_artifacts=artifacts,
+            conversions=dataset.conversions,
+        )
+
+    def _looks_like_raw_motion_csv(self, columns: list[str]) -> bool:
+        column_set = set(columns)
+        required_raw = set(MotionProcessingService.RAW_REQUIRED_COLUMNS)
+        if not required_raw.issubset(column_set):
+            return False
+        if any(marker in column_set for marker in self.PROCESSED_MARKER_COLUMNS):
+            return False
+        return True
 
     def _resolve_export_columns(self, dataset: LoadedDataset) -> list[str]:
         ordered_columns: list[str] = []

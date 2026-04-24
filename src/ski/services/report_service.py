@@ -10,7 +10,14 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QFont, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter
+from PySide6.QtGui import (
+    QFont,
+    QImage,
+    QPageLayout,
+    QPageSize,
+    QPainter,
+    QPdfWriter,
+)
 
 from core.exceptions import ReportExportError
 from core.models import LoadedDataset
@@ -137,33 +144,132 @@ class ReportService:
             ("Координаты геопозиций", summary["geopositions"]),
         ]
 
-        label_w = int(usable_width * 0.34)
+        y = self._draw_summary_table(
+            painter=painter,
+            writer=writer,
+            start_y=y,
+            margin=margin,
+            usable_width=usable_width,
+            rows=table_rows,
+            font=text_font,
+            page_height=page_height,
+        )
+
+        y += 16
+        painter.setFont(small_font)
+        note = (
+            "Поля 'Где был спуск' и 'Координаты геопозиций' заполняются из метаданных, "
+            "если они есть в выгруженном файле. Для импортированного CSV без таких "
+            "метаданных в отчёте выводится 'Не указано'."
+        )
+        painter.drawText(
+            QRectF(margin, y, usable_width, 80),
+            int(Qt.TextWordWrap),
+            note,
+        )
+
+    def _draw_summary_table(
+            self,
+            painter: QPainter,
+            writer: QPdfWriter,
+            start_y: int,
+            margin: int,
+            usable_width: int,
+            rows: list[tuple[str, str]],
+            font: QFont,
+            page_height: int,
+    ) -> int:
+        painter.setFont(font)
+
+        label_w = int(usable_width * 0.30)
         value_w = usable_width - label_w
-        row_h = 34
 
-        painter.setFont(text_font)
+        cell_padding_x = 8
+        cell_padding_y = 7
+        min_row_h = 34
 
-        for label, value in table_rows:
+        y = start_y
+
+        for label, value in rows:
+            label_text = self._normalize_cell_text(label)
+            value_text = self._normalize_cell_text(value)
+
+            label_text_h = self._measure_wrapped_text_height(
+                painter=painter,
+                width=label_w - 2 * cell_padding_x,
+                text=label_text,
+            )
+            value_text_h = self._measure_wrapped_text_height(
+                painter=painter,
+                width=value_w - 2 * cell_padding_x,
+                text=value_text,
+            )
+
+            row_h = max(min_row_h, max(label_text_h, value_text_h) + 2 * cell_padding_y)
+
             if y + row_h > page_height - margin:
                 writer.newPage()
                 y = margin
+                painter.setFont(font)
 
             painter.drawRect(margin, y, label_w, row_h)
             painter.drawRect(margin + label_w, y, value_w, row_h)
 
+            label_rect = QRectF(
+                margin + cell_padding_x,
+                y + cell_padding_y,
+                label_w - 2 * cell_padding_x,
+                row_h - 2 * cell_padding_y,
+                )
+            value_rect = QRectF(
+                margin + label_w + cell_padding_x,
+                y + cell_padding_y,
+                value_w - 2 * cell_padding_x,
+                row_h - 2 * cell_padding_y,
+                )
+
             painter.drawText(
-                QRectF(margin + 8, y + 6, label_w - 16, row_h - 12),
-                int(Qt.AlignVCenter | Qt.TextWordWrap),
-                label,
+                label_rect,
+                int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap),
+                label_text,
             )
             painter.drawText(
-                QRectF(margin + label_w + 8, y + 6, value_w - 16, row_h - 12),
-                int(Qt.AlignVCenter | Qt.TextWordWrap),
-                value,
+                value_rect,
+                int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap),
+                value_text,
             )
+
             y += row_h
 
-        y += 16
+        return y
+
+    def _measure_wrapped_text_height(
+            self,
+            painter: QPainter,
+            width: int,
+            text: str,
+    ) -> int:
+        rect = painter.boundingRect(
+            0,
+            0,
+            max(1, width),
+            10000,
+            int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap),
+            text,
+        )
+        return rect.height()
+
+    @staticmethod
+    def _normalize_cell_text(value: Any) -> str:
+        if value is None:
+            return "Не указано"
+
+        text = str(value).strip()
+        if not text:
+            return "Не указано"
+
+        return text
+
     def _draw_graph_page(
             self,
             painter: QPainter,
@@ -208,11 +314,11 @@ class ReportService:
         max_speed_ms = float(np.max(plot_data.speed_ms)) if len(plot_data.speed_ms) else 0.0
         max_speed_kmh = max_speed_ms * 3.6
 
-        temperatures = []
+        temperature_lines = []
         for key in ("temperature", "temperature2", "temperature3"):
             value = metadata.get(key)
             if value not in (None, "", "None"):
-                temperatures.append(f"{key}={value} °C")
+                temperature_lines.append(f"{key} = {value} °C")
 
         humidity_value = metadata.get("humidity")
         humidity = (
@@ -229,7 +335,7 @@ class ReportService:
                         or "Не указано",
             "when": self._pick_first(metadata, ["timestamp", "date", "datetime"])
                     or self._fallback_when(dataset),
-            "temperature": ", ".join(temperatures) if temperatures else "Не указано",
+            "temperature": "\n".join(temperature_lines) if temperature_lines else "Не указано",
             "humidity": humidity,
             "descent_time": self._format_seconds(duration_s),
             "descent_length": f"{distance_m:.2f} м",
@@ -339,15 +445,19 @@ class ReportService:
 
         if len(segments) > 0:
             line_collection = LineCollection(segments, cmap="viridis")
-            line_collection.set_array(plot_data.time_s[:-1])
+            color_source = getattr(plot_data, "trajectory_color_speed_ms", None)
+            if color_source is None or len(color_source) < 2:
+                color_source = plot_data.speed_ms
+            line_collection.set_array(color_source[:-1])
             line_collection.set_linewidth(2.0)
             ax_traj.add_collection(line_collection)
-            figure.colorbar(line_collection, ax=ax_traj, shrink=0.85, pad=0.02)
+            colorbar = figure.colorbar(line_collection, ax=ax_traj, shrink=0.85, pad=0.02)
+            colorbar.set_label("|v|, м/с")
 
         ax_traj.scatter(x[:1], z[:1], s=35, label="Старт")
         ax_traj.scatter(x[-1:], z[-1:], s=35, label="Финиш")
         ax_traj.autoscale()
-        ax_traj.set_title("5. Траектория z(x)")
+        ax_traj.set_title("5. Траектория z(x) с раскраской по |v|")
         ax_traj.set_xlabel("x, м")
         ax_traj.set_ylabel("z, м")
         ax_traj.grid(True, alpha=0.3)

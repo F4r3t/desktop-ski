@@ -68,7 +68,7 @@ class PlotProcessingService:
             velocity_y = np.zeros_like(velocity_x, dtype=np.float64)
 
         if speed is None:
-            speed = np.sqrt(velocity_x ** 2 + velocity_z ** 2)
+            speed = np.sqrt(velocity_x ** 2 + velocity_y ** 2 + velocity_z ** 2)
 
         if coord_x is None:
             coord_x = self._integrate_trapezoid(velocity_x, dt_s)
@@ -76,7 +76,7 @@ class PlotProcessingService:
         if coord_z is None:
             coord_z = self._integrate_trapezoid(velocity_z, dt_s)
 
-        trajectory_color_speed = np.sqrt(velocity_x ** 2 + velocity_y ** 2)
+        trajectory_color_speed = speed.copy()
 
         return PlotComputationResult(
             time_s=time_s,
